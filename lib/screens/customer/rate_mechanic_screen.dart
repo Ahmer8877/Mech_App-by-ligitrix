@@ -1,0 +1,102 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../cores/config/supabase_config.dart';
+import '../../cores/providers/auth_provider.dart';
+import '../../cores/providers/bookings_provider.dart';
+import '../../cores/theme/app_theme.dart';
+import '../../widgets/app_buttons.dart';
+import 'customer_home_screen.dart';
+
+class RateMechanicScreen extends ConsumerStatefulWidget {
+  final String bookingId;
+  const RateMechanicScreen({super.key, required this.bookingId});
+  @override
+  ConsumerState<RateMechanicScreen> createState() => _RateMechanicScreenState();
+}
+
+class _RateMechanicScreenState extends ConsumerState<RateMechanicScreen> {
+  int rating = 5;
+  final comment = TextEditingController();
+  bool saving = false;
+  @override
+  void dispose() {
+    comment.dispose();
+    super.dispose();
+  }
+
+  Future<void> submit(Map<String, dynamic>? b) async {
+    final uid = ref.read(authProvider).user?.id;
+    final mid =
+        (b?['mechanic'] as Map?)?['id']?.toString() ??
+        b?['mechanic_id']?.toString();
+    if (uid == null || mid == null) return;
+    setState(() => saving = true);
+    try {
+      await supabase.from('reviews').upsert({
+        'booking_id': widget.bookingId,
+        'customer_id': uid,
+        'mechanic_id': mid,
+        'rating': rating,
+        'comment': comment.text.trim(),
+      }, onConflict: 'booking_id,customer_id');
+      ref.invalidate(bookingsProvider);
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const CustomerHomeScreen()),
+          (_) => false,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final b = ref.watch(bookingDetailsProvider(widget.bookingId));
+    return Scaffold(
+      appBar: AppBar(title: const Text('Rate Your Experience')),
+      body: b.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => (Center(child: Text('$e'))),
+        data: (x) => Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            children: [
+              Text(
+                (x?['mechanic'] as Map?)?['full_name']?.toString() ??
+                    'Mechanic',
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  5,
+                  (i) => IconButton(
+                    onPressed: () => setState(() => rating = i + 1),
+                    icon: Icon(
+                      i < rating ? Icons.star : Icons.star_border,
+                      color: context.colors.accent,
+                    ),
+                  ),
+                ),
+              ),
+              TextField(
+                controller: comment,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  hintText: 'Write your review (optional)',
+                ),
+              ),
+              const Spacer(),
+              AccentButton(
+                label: saving ? 'Submitting...' : 'Submit Review',
+                onPressed: saving ? null : () => submit(x),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
