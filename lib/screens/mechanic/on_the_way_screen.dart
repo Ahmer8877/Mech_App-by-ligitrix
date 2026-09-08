@@ -47,7 +47,8 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
       if (!permission) {
         if (mounted) {
           setState(() {
-            _locationError = 'Please allow location permission and turn on GPS.';
+            _locationError =
+                'Please allow location permission and turn on GPS.';
             _starting = false;
           });
         }
@@ -55,7 +56,9 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
       }
 
       // The moment the mechanic starts navigation, mark the job as on the way.
-      await ref.read(bookingRepositoryProvider).updateStatus(widget.bookingId, 'on_the_way');
+      await ref
+          .read(bookingRepositoryProvider)
+          .updateStatus(widget.bookingId, 'on_the_way');
 
       final repository = ref.read(liveLocationRepositoryProvider);
       final firstPosition = await Geolocator.getCurrentPosition(
@@ -68,25 +71,28 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
       );
       _setMyLocation(mechanicId, firstPosition);
 
-      _positionSubscription = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 10,
-        ),
-      ).listen((position) async {
-        try {
-          await repository.updateMechanicLocation(
-            bookingId: widget.bookingId,
-            mechanicId: mechanicId,
-            position: position,
-          );
-          _setMyLocation(mechanicId, position);
-        } catch (e) {
-          if (mounted) setState(() => _locationError = 'GPS update failed: $e');
-        }
-      });
+      _positionSubscription =
+          Geolocator.getPositionStream(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.high,
+              distanceFilter: 10,
+            ),
+          ).listen((position) async {
+            try {
+              await repository.updateMechanicLocation(
+                bookingId: widget.bookingId,
+                mechanicId: mechanicId,
+                position: position,
+              );
+              _setMyLocation(mechanicId, position);
+            } catch (e) {
+              if (mounted)
+                setState(() => _locationError = 'GPS update failed: $e');
+            }
+          });
     } catch (e) {
-      if (mounted) setState(() => _locationError = 'Unable to start live location: $e');
+      if (mounted)
+        setState(() => _locationError = 'Unable to start live location: $e');
     } finally {
       if (mounted) setState(() => _starting = false);
     }
@@ -128,7 +134,9 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
   Future<void> _complete() async {
     try {
       await ref.read(bookingRepositoryProvider).complete(widget.bookingId);
-      await ref.read(liveLocationRepositoryProvider).clearMechanicLocation(widget.bookingId);
+      await ref
+          .read(liveLocationRepositoryProvider)
+          .clearMechanicLocation(widget.bookingId);
       ref.invalidate(mechanicBookingsProvider);
       ref.invalidate(bookingDetailsProvider(widget.bookingId));
       await _positionSubscription?.cancel();
@@ -137,14 +145,16 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
       if (mounted) {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => JobCompletedScreen(bookingId: widget.bookingId)),
+          MaterialPageRoute(
+            builder: (_) => JobCompletedScreen(bookingId: widget.bookingId),
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Job complete nahi hua: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Job complete nahi hua: $e')));
       }
     }
   }
@@ -158,6 +168,9 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
   @override
   Widget build(BuildContext context) {
     final bookingAsync = ref.watch(bookingDetailsProvider(widget.bookingId));
+    final liveLocation = ref
+        .watch(bookingLiveLocationProvider(widget.bookingId))
+        .valueOrNull;
 
     return Scaffold(
       appBar: AppBar(title: const Text('On The Way')),
@@ -176,13 +189,20 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
               .join()
               .toUpperCase();
 
+          final liveCustomer = liveLocation?.hasCustomerLocation == true
+              ? LatLng(
+                  liveLocation!.customerLatitude!,
+                  liveLocation.customerLongitude!,
+                )
+              : _customerLocation(booking);
+
           return Padding(
             padding: const EdgeInsets.all(18),
             child: Column(
               children: [
                 Expanded(
                   child: LiveGoogleMap(
-                    customerLocation: _customerLocation(booking),
+                    customerLocation: liveCustomer,
                     mechanicLocation: _myLocation,
                   ),
                 ),
@@ -198,7 +218,10 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
                       _locationError!,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: context.colors.textMuted, fontSize: 11),
+                      style: TextStyle(
+                        color: context.colors.textMuted,
+                        fontSize: 11,
+                      ),
                     ),
                   ),
                 Text(
@@ -214,11 +237,14 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
                         onPressed: customerId.isEmpty
                             ? null
                             : () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => CallScreen(name: name, initials: initials),
-                          ),
-                        ),
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => CallScreen(
+                                    name: name,
+                                    initials: initials,
+                                  ),
+                                ),
+                              ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -228,24 +254,21 @@ class _OnTheWayScreenState extends ConsumerState<OnTheWayScreen> {
                         onPressed: customerId.isEmpty
                             ? null
                             : () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => ChatScreen(
-                              bookingId: widget.bookingId,
-                              otherUserId: customerId,
-                              otherName: name,
-                            ),
-                          ),
-                        ),
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ChatScreen(
+                                    bookingId: widget.bookingId,
+                                    otherUserId: customerId,
+                                    otherName: name,
+                                  ),
+                                ),
+                              ),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 10),
-                AccentButton(
-                  label: 'Mark Job Completed',
-                  onPressed: _complete,
-                ),
+                AccentButton(label: 'Mark Job Completed', onPressed: _complete),
               ],
             ),
           );

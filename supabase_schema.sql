@@ -93,7 +93,45 @@ CREATE TABLE IF NOT EXISTS public.services (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Populate default popular services
+-- Keep one canonical row per service title. This also repairs duplicates
+-- left behind by older schema versions where `id` was the only unique key.
+DO $$
+BEGIN
+  -- On an existing database, preserve booking references before removing
+  -- duplicate service rows. Dynamic SQL keeps a fresh schema run valid
+  -- because `bookings` is created later in this file.
+  IF to_regclass('public.bookings') IS NOT NULL THEN
+    EXECUTE $sql$
+      UPDATE public.bookings b
+      SET service_id = canonical.id
+      FROM (
+        SELECT DISTINCT ON (lower(trim(title)))
+          lower(trim(title)) AS title_key,
+          id
+        FROM public.services
+        ORDER BY lower(trim(title)), id
+      ) canonical
+      WHERE b.service_id IN (
+        SELECT s2.id
+        FROM public.services s2
+        WHERE lower(trim(s2.title)) = canonical.title_key
+          AND s2.id <> canonical.id
+      )
+    $sql$;
+  END IF;
+
+  DELETE FROM public.services s
+  WHERE s.id NOT IN (
+    SELECT DISTINCT ON (lower(trim(title))) id
+    FROM public.services
+    ORDER BY lower(trim(title)), id
+  );
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS services_title_unique
+  ON public.services (lower(trim(title)));
+
+-- Populate default popular services without creating duplicates on re-run.
 INSERT INTO public.services (title, description, icon_name, base_price) VALUES
   ('General Service', 'Basic checkup & parts inspection', 'build_circle_outlined', 1500),
   ('Engine Repair', 'Engine related issues and overhaul', 'settings_outlined', 1800),
@@ -101,7 +139,7 @@ INSERT INTO public.services (title, description, icon_name, base_price) VALUES
   ('Air Conditioning', 'AC cooling and gas refill', 'ac_unit_outlined', 1650),
   ('Tyre Change', 'Flat tyre repair or replacement', 'tire_repair_outlined', 1000),
   ('Towing Service', 'Vehicle towing & emergency pickup', 'local_shipping_outlined', 2500)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (lower(trim(title))) DO NOTHING;
 
 -- ---------------------------------------------------------------------
 -- 5. BOOKINGS / SERVICE REQUESTS TABLE
@@ -127,6 +165,13 @@ CREATE TABLE IF NOT EXISTS public.bookings (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname='supabase_realtime' AND schemaname='public' AND tablename='bookings') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.bookings;
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------
 -- 6. OFFERS / BIDS TABLE (Realtime Bidding System)
@@ -164,37 +209,66 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.booking_locations (
   booking_id UUID PRIMARY KEY REFERENCES public.bookings(id) ON DELETE CASCADE,
-  mechanic_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  latitude DOUBLE PRECISION NOT NULL,
-  longitude DOUBLE PRECISION NOT NULL,
+  mechanic_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  customer_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION,
   accuracy DOUBLE PRECISION,
   heading DOUBLE PRECISION DEFAULT 0,
   speed DOUBLE PRECISION,
+  customer_latitude DOUBLE PRECISION,
+  customer_longitude DOUBLE PRECISION,
+  customer_accuracy DOUBLE PRECISION,
+  customer_heading DOUBLE PRECISION DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE public.booking_locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.booking_locations ADD COLUMN IF NOT EXISTS customer_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE;
+ALTER TABLE public.booking_locations ADD COLUMN IF NOT EXISTS customer_latitude DOUBLE PRECISION;
+ALTER TABLE public.booking_locations ADD COLUMN IF NOT EXISTS customer_longitude DOUBLE PRECISION;
+ALTER TABLE public.booking_locations ADD COLUMN IF NOT EXISTS customer_accuracy DOUBLE PRECISION;
+ALTER TABLE public.booking_locations ADD COLUMN IF NOT EXISTS customer_heading DOUBLE PRECISION DEFAULT 0;
+ALTER TABLE public.booking_locations ALTER COLUMN mechanic_id DROP NOT NULL;
+ALTER TABLE public.booking_locations ALTER COLUMN latitude DROP NOT NULL;
+ALTER TABLE public.booking_locations ALTER COLUMN longitude DROP NOT NULL;
 
 DROP POLICY IF EXISTS "Booking parties view live location" ON public.booking_locations;
-CREATE POLICY "Booking parties view live location" ON public.booking_locations
-  FOR SELECT USING (
-    auth.uid() = mechanic_id
-    OR auth.uid() IN (
-      SELECT customer_id FROM public.bookings WHERE bookings.id = booking_locations.booking_id
-    )
-  );
-
+CREATE POLICY "Booking parties view live location" ON public.booking_locations FOR SELECT USING (
+  auth.uid() = mechanic_id OR auth.uid() = customer_id OR EXISTS (
+    SELECT 1 FROM public.bookings b
+    WHERE b.id = booking_locations.booking_id
+      AND (b.customer_id = auth.uid() OR b.mechanic_id = auth.uid())
+  )
+);
 DROP POLICY IF EXISTS "Mechanic writes own location" ON public.booking_locations;
-CREATE POLICY "Mechanic writes own location" ON public.booking_locations
-  FOR INSERT WITH CHECK (auth.uid() = mechanic_id);
-
+CREATE POLICY "Mechanic writes own location" ON public.booking_locations FOR INSERT WITH CHECK (
+  auth.uid() = mechanic_id AND EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_id AND b.mechanic_id = auth.uid())
+);
 DROP POLICY IF EXISTS "Mechanic updates own location" ON public.booking_locations;
-CREATE POLICY "Mechanic updates own location" ON public.booking_locations
-  FOR UPDATE USING (auth.uid() = mechanic_id);
-
+CREATE POLICY "Mechanic updates own location" ON public.booking_locations FOR UPDATE USING (auth.uid() = mechanic_id) WITH CHECK (auth.uid() = mechanic_id);
+DROP POLICY IF EXISTS "Customer writes own location" ON public.booking_locations;
+CREATE POLICY "Customer writes own location" ON public.booking_locations FOR INSERT WITH CHECK (
+  auth.uid() = customer_id AND EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_id AND b.customer_id = auth.uid())
+);
+DROP POLICY IF EXISTS "Customer updates own location" ON public.booking_locations;
+CREATE POLICY "Customer updates own location" ON public.booking_locations FOR UPDATE USING (auth.uid() = customer_id) WITH CHECK (auth.uid() = customer_id);
 DROP POLICY IF EXISTS "Mechanic deletes own location" ON public.booking_locations;
-CREATE POLICY "Mechanic deletes own location" ON public.booking_locations
-  FOR DELETE USING (auth.uid() = mechanic_id);
+CREATE POLICY "Mechanic deletes own location" ON public.booking_locations FOR DELETE USING (auth.uid() = mechanic_id);
+
+-- Add the table to Supabase Realtime if it is not already published.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime'
+      AND schemaname = 'public'
+      AND tablename = 'booking_locations'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.booking_locations;
+  END IF;
+END $$;
 
 -- IMPORTANT (manual step): Supabase Dashboard → Database → Replication →
 -- enable Realtime on "booking_locations", same as you did for offers/
@@ -316,12 +390,43 @@ BEGIN
   END LOOP;
 END $$;
 
+-- Helper used by RLS without recursively querying the profiles policy.
+CREATE OR REPLACE FUNCTION public.is_verified_mechanic()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE id = auth.uid()
+      AND role = 'mechanic'
+      AND is_verified = true
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.can_read_booking_profile(p_profile_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public AS $$
+  SELECT p_profile_id = auth.uid() OR EXISTS (
+    SELECT 1 FROM public.bookings b
+    WHERE (b.customer_id=auth.uid() AND b.mechanic_id=p_profile_id)
+       OR (b.mechanic_id=auth.uid() AND b.customer_id=p_profile_id)
+       OR (b.customer_id=p_profile_id AND b.mechanic_id IS NULL AND b.status='pending' AND public.is_verified_mechanic())
+  );
+$$;
+
 -- Profiles: users can read/update their own private profile.
 CREATE POLICY "Users read own profile" ON public.profiles
   FOR SELECT USING (auth.uid() = id);
 CREATE POLICY "Users update own profile" ON public.profiles
   FOR UPDATE USING (auth.uid() = id)
   WITH CHECK (auth.uid() = id);
+
+DROP POLICY IF EXISTS "Users read booking participant profiles" ON public.profiles;
+CREATE POLICY "Users read booking participant profiles" ON public.profiles
+  FOR SELECT USING (public.can_read_booking_profile(id));
 
 -- Vehicles: owner-only CRUD.
 CREATE POLICY "Users read own vehicles" ON public.vehicles FOR SELECT USING (auth.uid() = owner_id);
@@ -337,10 +442,7 @@ CREATE POLICY "Anyone read active services" ON public.services FOR SELECT USING 
 CREATE POLICY "Users read relevant bookings" ON public.bookings FOR SELECT USING (
   auth.uid() = customer_id
   OR auth.uid() = mechanic_id
-  OR (mechanic_id IS NULL AND EXISTS (
-    SELECT 1 FROM public.profiles p
-    WHERE p.id = auth.uid() AND p.role = 'mechanic' AND p.is_verified = true
-  ))
+  OR (mechanic_id IS NULL AND public.is_verified_mechanic())
 );
 CREATE POLICY "Customers create bookings" ON public.bookings FOR INSERT WITH CHECK (
   auth.uid() = customer_id

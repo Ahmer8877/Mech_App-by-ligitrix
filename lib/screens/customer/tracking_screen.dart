@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../cores/providers/bookings_provider.dart';
+import '../../cores/providers/auth_provider.dart';
 import '../../cores/providers/live_location_provider.dart';
 import '../../cores/theme/app_theme.dart';
 import '../../widgets/app_atoms.dart';
@@ -12,22 +15,75 @@ import 'chat_screen.dart';
 import 'customer_home_screen.dart';
 import 'payment_rating_screen.dart';
 
-class TrackingScreen extends ConsumerWidget {
+class TrackingScreen extends ConsumerStatefulWidget {
   final String bookingId;
 
   const TrackingScreen({super.key, required this.bookingId});
 
+  @override
+  ConsumerState<TrackingScreen> createState() => _TrackingScreenState();
+}
+
+class _TrackingScreenState extends ConsumerState<TrackingScreen> {
+  StreamSubscription<Position>? _positionSubscription;
+  bool _locationStarted = false;
+
+  Future<void> _startCustomerTracking() async {
+    if (_locationStarted) return;
+    _locationStarted = true;
+    final customerId = ref.read(authProvider).user?.id;
+    if (customerId == null) return;
+    final permission = await _ensureLocationPermission();
+    if (!permission) return;
+    final repo = ref.read(liveLocationRepositoryProvider);
+    try {
+      final first = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      await repo.updateCustomerLocation(
+        bookingId: widget.bookingId,
+        customerId: customerId,
+        position: first,
+      );
+      _positionSubscription =
+          Geolocator.getPositionStream(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.high,
+              distanceFilter: 10,
+            ),
+          ).listen((position) async {
+            try {
+              await repo.updateCustomerLocation(
+                bookingId: widget.bookingId,
+                customerId: customerId,
+                position: position,
+              );
+            } catch (_) {}
+          });
+    } catch (_) {}
+  }
+
+  Future<bool> _ensureLocationPermission() async {
+    if (!await Geolocator.isLocationServiceEnabled()) return false;
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    return permission != LocationPermission.denied &&
+        permission != LocationPermission.deniedForever;
+  }
+
   Future<void> _cancel(BuildContext context, WidgetRef ref) async {
     try {
-      await ref.read(bookingRepositoryProvider).cancel(bookingId);
+      await ref.read(bookingRepositoryProvider).cancel(widget.bookingId);
       ref.invalidate(bookingsProvider);
-      ref.invalidate(bookingDetailsProvider(bookingId));
+      ref.invalidate(bookingDetailsProvider(widget.bookingId));
 
       if (context.mounted) {
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (_) => const CustomerHomeScreen()),
-              (_) => false,
+          (_) => false,
         );
       }
     } catch (e) {
@@ -40,8 +96,15 @@ class TrackingScreen extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final booking = ref.watch(bookingDetailsProvider(bookingId));
+  void dispose() {
+    _positionSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ref = this.ref;
+    final booking = ref.watch(bookingDetailsProvider(widget.bookingId));
 
     return Scaffold(
       appBar: AppBar(title: const Text('Booking Status')),
@@ -65,12 +128,26 @@ class TrackingScreen extends ConsumerWidget {
               .join()
               .toUpperCase();
           final status = data['status']?.toString() ?? 'pending';
+          if (status == 'accepted' ||
+              status == 'on_the_way' ||
+              status == 'in_progress') {
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _startCustomerTracking(),
+            );
+          }
           final service = data['service_title']?.toString() ?? 'Service';
           final address = data['pickup_address']?.toString() ?? '';
           final lat = (data['latitude'] as num?)?.toDouble();
           final lng = (data['longitude'] as num?)?.toDouble();
-          final customerLocation = (lat != null && lng != null) ? LatLng(lat, lng) : null;
-          final mechanicLocation = ref.watch(mechanicLiveLocationProvider(bookingId)).valueOrNull;
+          final live = ref
+              .watch(bookingLiveLocationProvider(widget.bookingId))
+              .valueOrNull;
+          final customerLocation = live?.hasCustomerLocation == true
+              ? LatLng(live!.customerLatitude!, live.customerLongitude!)
+              : ((lat != null && lng != null) ? LatLng(lat, lng) : null);
+          final mechanicLocation = live?.hasMechanicLocation == true
+              ? live
+              : null;
 
           return Padding(
             padding: const EdgeInsets.all(18),
@@ -131,14 +208,14 @@ class TrackingScreen extends ConsumerWidget {
                         onPressed: mechanicId.isEmpty
                             ? null
                             : () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => CallScreen(
-                              name: name,
-                              initials: initials,
-                            ),
-                          ),
-                        ),
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => CallScreen(
+                                    name: name,
+                                    initials: initials,
+                                  ),
+                                ),
+                              ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -148,15 +225,15 @@ class TrackingScreen extends ConsumerWidget {
                         onPressed: mechanicId.isEmpty
                             ? null
                             : () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => ChatScreen(
-                              bookingId: bookingId,
-                              otherUserId: mechanicId,
-                              otherName: name,
-                            ),
-                          ),
-                        ),
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ChatScreen(
+                                    bookingId: widget.bookingId,
+                                    otherUserId: mechanicId,
+                                    otherName: name,
+                                  ),
+                                ),
+                              ),
                       ),
                     ),
                   ],
@@ -169,7 +246,7 @@ class TrackingScreen extends ConsumerWidget {
                       context,
                       MaterialPageRoute(
                         builder: (_) =>
-                            PaymentRatingScreen(bookingId: bookingId),
+                            PaymentRatingScreen(bookingId: widget.bookingId),
                       ),
                     ),
                   )

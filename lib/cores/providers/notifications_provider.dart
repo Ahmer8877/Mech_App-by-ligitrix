@@ -5,7 +5,7 @@ import '../repositories/notification_repository.dart';
 import 'auth_provider.dart';
 
 final notificationRepositoryProvider = Provider<NotificationRepository>(
-      (ref) => NotificationRepository(supabase),
+  (ref) => NotificationRepository(supabase),
 );
 
 class NotificationsNotifier extends AsyncNotifier<List<NotificationModel>> {
@@ -14,9 +14,7 @@ class NotificationsNotifier extends AsyncNotifier<List<NotificationModel>> {
 
   @override
   Future<List<NotificationModel>> build() async {
-    final userId = ref.watch(
-      authProvider.select((state) => state.user?.id),
-    );
+    final userId = ref.watch(authProvider.select((state) => state.user?.id));
 
     if (userId == null) return const [];
 
@@ -36,14 +34,14 @@ class NotificationsNotifier extends AsyncNotifier<List<NotificationModel>> {
 }
 
 final notificationsProvider =
-AsyncNotifierProvider<NotificationsNotifier, List<NotificationModel>>(
-  NotificationsNotifier.new,
-);
+    AsyncNotifierProvider<NotificationsNotifier, List<NotificationModel>>(
+      NotificationsNotifier.new,
+    );
 
 final unreadNotificationsCountProvider = Provider<int>((ref) {
   final notifications =
       ref.watch(notificationsProvider).valueOrNull ??
-          const <NotificationModel>[];
+      const <NotificationModel>[];
 
   return notifications.where((n) => n.unread).length;
 });

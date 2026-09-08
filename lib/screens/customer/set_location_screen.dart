@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../cores/config/supabase_config.dart';
 import '../../cores/providers/auth_provider.dart';
 import '../../cores/providers/booking_draft_provider.dart';
@@ -8,8 +9,8 @@ import '../../cores/providers/bookings_provider.dart';
 import '../../cores/providers/services_provider.dart';
 import '../../cores/repositories/booking_repository.dart';
 import '../../cores/theme/app_theme.dart';
-import '../../widgets/app_atoms.dart';
 import '../../widgets/app_buttons.dart';
+import '../../widgets/live_google_map.dart';
 import '../../widgets/step_progress.dart';
 import 'offers_screen.dart';
 
@@ -24,6 +25,9 @@ class _SetLocationScreenState extends ConsumerState<SetLocationScreen> {
   final _addressController = TextEditingController();
   final _budgetController = TextEditingController();
   bool _saving = false;
+  bool _locating = true;
+  String? _locationError;
+  Position? _currentPosition;
 
   Future<void> _createBooking() async {
     final draft = ref.read(bookingDraftProvider);
@@ -83,6 +87,8 @@ class _SetLocationScreenState extends ConsumerState<SetLocationScreen> {
         address: address,
         budget: budget,
         paymentMethod: 'Cash',
+        latitude: _currentPosition?.latitude,
+        longitude: _currentPosition?.longitude,
       );
 
       ref.read(bookingDraftProvider.notifier).setLocation(address);
@@ -106,6 +112,56 @@ class _SetLocationScreenState extends ConsumerState<SetLocationScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _loadCurrentLocation();
+  }
+
+  Future<void> _loadCurrentLocation() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        setState(() {
+          _locating = false;
+          _locationError = 'GPS is turned off.';
+        });
+        return;
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        setState(() {
+          _locating = false;
+          _locationError =
+              'Location permission is required to show your pickup point.';
+        });
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _currentPosition = position;
+        _locating = false;
+        _locationError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _locating = false;
+        _locationError = 'Could not get current location.';
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _addressController.dispose();
     _budgetController.dispose();
@@ -125,9 +181,47 @@ class _SetLocationScreenState extends ConsumerState<SetLocationScreen> {
           children: [
             const StepProgress(total: 5, current: 4),
             Expanded(
-              child: MapPlaceholder(
-                height: double.infinity,
-                pins: const [MapPin(top: 100, left: 130, emoji: '📍')],
+              child: Stack(
+                children: [
+                  LiveGoogleMap(
+                    customerLocation: _currentPosition == null
+                        ? null
+                        : LatLng(
+                            _currentPosition!.latitude,
+                            _currentPosition!.longitude,
+                          ),
+                    showMechanicMarker: false,
+                  ),
+                  if (_locating)
+                    const Positioned(
+                      top: 12,
+                      left: 12,
+                      child: Card(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 7,
+                          ),
+                          child: Text('Getting your location...'),
+                        ),
+                      ),
+                    ),
+                  if (!_locating && _locationError != null)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 12,
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Text(
+                            _locationError!,
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
             TextField(

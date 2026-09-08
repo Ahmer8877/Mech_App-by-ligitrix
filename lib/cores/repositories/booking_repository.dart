@@ -60,6 +60,8 @@ class BookingRepository {
     required String address,
     required double budget,
     required String paymentMethod,
+    double? latitude,
+    double? longitude,
   }) async {
     final row = await client
         .from('bookings')
@@ -71,6 +73,8 @@ class BookingRepository {
           'description': description,
           'photo_urls': photoUrls,
           'pickup_address': address,
+          if (latitude != null) 'latitude': latitude,
+          if (longitude != null) 'longitude': longitude,
           'status': 'pending',
           'budget_price': budget,
           'payment_method': paymentMethod,

@@ -197,12 +197,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   ).textTheme.headlineMedium?.copyWith(fontSize: 21),
                 ),
                 const SizedBox(height: 20),
-                _Label('EMAIL / PHONE NUMBER'),
+                _Label('EMAIL /'),
                 TextFormField(
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
                   decoration: const InputDecoration(
-                    hintText: 'user@example.com or +923001234567',
+                    hintText: 'user@example.com',
                     prefixIcon: Icon(Icons.email_outlined, size: 20),
                   ),
                   validator: (value) {

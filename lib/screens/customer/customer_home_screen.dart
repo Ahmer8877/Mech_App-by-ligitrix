@@ -218,11 +218,15 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
                       (s) => ServiceTile(
                         icon: s.icon,
                         label: s.title,
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const SelectVehicleScreen(),
-                          ),
-                        ),
+                        onTap: () {
+                          ref.read(selectedServiceIdProvider.notifier).state =
+                              s.id;
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const SelectVehicleScreen(),
+                            ),
+                          );
+                        },
                       ),
                     )
                     .toList(),

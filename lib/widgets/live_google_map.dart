@@ -1,7 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../cores/repositories/live_location_repository.dart';
+import '../cores/repositories/routes_repository.dart';
 import '../cores/theme/app_theme.dart';
 
 class LiveGoogleMap extends StatefulWidget {
@@ -26,27 +30,148 @@ class _LiveGoogleMapState extends State<LiveGoogleMap> {
   GoogleMapController? _controller;
   LatLng? _lastAnimatedMechanic;
   bool _hasFittedInitialMarkers = false;
+  List<LatLng> _routePoints = const [];
+  bool _routeLoading = false;
+  String? _routeError;
+  double? _lastRouteLat;
+  double? _lastRouteLng;
+  double? _lastDestinationLat;
+  double? _lastDestinationLng;
 
   static const _fallback = LatLng(31.5204, 74.3587);
 
   @override
   void didUpdateWidget(covariant LiveGoogleMap oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final next = _mechanicLatLng(widget.mechanicLocation);
-    if (next != null && next != _lastAnimatedMechanic) {
-      _lastAnimatedMechanic = next;
-      if (!_hasFittedInitialMarkers && widget.customerLocation != null) {
-        _hasFittedInitialMarkers = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) => _fitMarkers());
-      } else {
-        _controller?.animateCamera(CameraUpdate.newLatLng(next));
-      }
+
+    final mechanic = _mechanicLatLng(widget.mechanicLocation);
+    final customerChanged =
+        oldWidget.customerLocation != widget.customerLocation;
+    final mechanicChanged =
+        oldWidget.mechanicLocation != widget.mechanicLocation;
+
+    if (!customerChanged && !mechanicChanged) return;
+
+    if (mechanic != null) {
+      _refreshRoadRoute(force: true);
     }
+
+    if (mechanic != null) {
+      _lastAnimatedMechanic = mechanic;
+    }
+
+    // When GPS becomes available after the map has already been created,
+    // move the camera to the real location instead of staying on Lahore fallback.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _controller == null) return;
+      if (widget.customerLocation != null && mechanic != null) {
+        _fitMarkers();
+      } else if (mechanic != null) {
+        _controller!.animateCamera(CameraUpdate.newLatLng(mechanic));
+      } else if (widget.customerLocation != null) {
+        _controller!.animateCamera(
+          CameraUpdate.newLatLng(widget.customerLocation!),
+        );
+      }
+    });
   }
 
   LatLng? _mechanicLatLng(LiveLocation? location) {
-    if (location == null) return null;
-    return LatLng(location.latitude, location.longitude);
+    if (location == null || !location.hasMechanicLocation) return null;
+
+    // LiveLocation coordinates are nullable because the database row may
+    // exist before the mechanic sends the first GPS update. The guard above
+    // proves both values are available, so the non-null assertions are safe.
+    return LatLng(location.latitude!, location.longitude!);
+  }
+
+  Set<Polyline> _polylines() {
+    final customer = widget.customerLocation;
+    final mechanic = _mechanicLatLng(widget.mechanicLocation);
+    if (customer == null || mechanic == null) return const <Polyline>{};
+    final points = _routePoints.length >= 2
+        ? _routePoints
+        : [mechanic, customer];
+    return {
+      Polyline(
+        polylineId: const PolylineId('live_route'),
+        points: points,
+        width: 6,
+        geodesic: false,
+      ),
+    };
+  }
+
+  double _distanceMeters(double lat1, double lon1, double lat2, double lon2) {
+    const r = 6371000.0;
+    final dLat = (lat2 - lat1) * 3.141592653589793 / 180;
+    final dLon = (lon2 - lon1) * 3.141592653589793 / 180;
+    final a =
+        (math.sin(dLat / 2) * math.sin(dLat / 2)) +
+        math.cos(lat1 * 3.141592653589793 / 180) *
+            math.cos(lat2 * 3.141592653589793 / 180) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+  }
+
+  Future<void> _refreshRoadRoute({bool force = false}) async {
+    final customer = widget.customerLocation;
+    final mechanic = _mechanicLatLng(widget.mechanicLocation);
+    if (customer == null || mechanic == null || _routeLoading) return;
+
+    if (!force &&
+        _lastRouteLat != null &&
+        _lastRouteLng != null &&
+        _lastDestinationLat != null &&
+        _lastDestinationLng != null) {
+      final moved = _distanceMeters(
+        _lastRouteLat!,
+        _lastRouteLng!,
+        mechanic.latitude,
+        mechanic.longitude,
+      );
+      final destinationMoved = _distanceMeters(
+        _lastDestinationLat!,
+        _lastDestinationLng!,
+        customer.latitude,
+        customer.longitude,
+      );
+      if (moved < 30 && destinationMoved < 15) return;
+    }
+
+    _routeLoading = true;
+    try {
+      final result = await RoutesRepository(Supabase.instance.client)
+          .getDrivingRoute(
+            originLatitude: mechanic.latitude,
+            originLongitude: mechanic.longitude,
+            destinationLatitude: customer.latitude,
+            destinationLongitude: customer.longitude,
+          );
+      if (!mounted) return;
+      if (result != null && result.points.length >= 2) {
+        setState(() {
+          _routeError = null;
+          _routePoints = result.points
+              .map((p) => LatLng(p.latitude, p.longitude))
+              .toList(growable: false);
+          _lastRouteLat = mechanic.latitude;
+          _lastRouteLng = mechanic.longitude;
+          _lastDestinationLat = customer.latitude;
+          _lastDestinationLng = customer.longitude;
+        });
+      } else if (mounted) {
+        setState(
+          () => _routeError = 'Road route unavailable. Check Routes API setup.',
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _routeError = 'Road route error: $e');
+      // Keep the straight-line fallback when the Routes API is unavailable.
+    } finally {
+      _routeLoading = false;
+    }
   }
 
   Set<Marker> _markers() {
@@ -70,7 +195,9 @@ class _LiveGoogleMapState extends State<LiveGoogleMap> {
           markerId: const MarkerId('mechanic_live'),
           position: mechanic,
           infoWindow: const InfoWindow(title: 'Mechanic'),
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueAzure,
+          ),
           rotation: widget.mechanicLocation!.heading,
         ),
       );
@@ -122,15 +249,20 @@ class _LiveGoogleMapState extends State<LiveGoogleMap> {
 
   @override
   Widget build(BuildContext context) {
-    final hasAnyLocation = widget.customerLocation != null || widget.mechanicLocation != null;
+    final hasAnyLocation =
+        widget.customerLocation != null || widget.mechanicLocation != null;
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(13),
       child: Stack(
         children: [
           GoogleMap(
-            initialCameraPosition: CameraPosition(target: _initialTarget(), zoom: hasAnyLocation ? 14 : 11),
+            initialCameraPosition: CameraPosition(
+              target: _initialTarget(),
+              zoom: hasAnyLocation ? 14 : 11,
+            ),
             markers: _markers(),
+            polylines: _polylines(),
             myLocationEnabled: false,
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
@@ -141,13 +273,16 @@ class _LiveGoogleMapState extends State<LiveGoogleMap> {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 _hasFittedInitialMarkers = true;
                 _fitMarkers();
+                _refreshRoadRoute(force: true);
               });
             },
           ),
           if (!hasAnyLocation)
             Positioned.fill(
               child: ColoredBox(
-                color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.78),
+                color: Theme.of(
+                  context,
+                ).colorScheme.surface.withValues(alpha: 0.78),
                 child: Center(
                   child: Padding(
                     padding: const EdgeInsets.all(20),
@@ -160,13 +295,49 @@ class _LiveGoogleMapState extends State<LiveGoogleMap> {
                 ),
               ),
             ),
+          if (_routeError != null &&
+              widget.customerLocation != null &&
+              widget.mechanicLocation != null)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: Material(
+                elevation: 2,
+                borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _routeError!,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _routeLoading
+                            ? null
+                            : () => _refreshRoadRoute(force: true),
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           if (widget.mechanicLocation != null)
             Positioned(
               top: 12,
               left: 12,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.92),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.surface.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: const Padding(
