@@ -34,7 +34,6 @@ class MechXApp extends ConsumerWidget {
       darkTheme: AppTheme.dark,
       home: const SplashScreen(),
       onGenerateRoute: (settings) {
-        // Intercept OAuth callback query routes (e.g., "/?code=...") safely
         return MaterialPageRoute(
           builder: (_) => const SplashScreen(),
           settings: settings,
