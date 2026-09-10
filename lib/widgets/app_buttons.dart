@@ -119,10 +119,20 @@ class OutlineActionButton extends StatelessWidget {
           ).textTheme.titleMedium?.copyWith(fontSize: 14),
         ),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            if (icon != null) ...[icon!, const SizedBox(width: 8)],
-            Text(label),
+            if (icon != null) ...[
+              IconTheme.merge(data: const IconThemeData(size: 18), child: icon!),
+              const SizedBox(width: 6),
+            ],
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+              ),
+            ),
           ],
         ),
       ),

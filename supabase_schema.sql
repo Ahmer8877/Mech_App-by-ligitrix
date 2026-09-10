@@ -246,15 +246,25 @@ CREATE POLICY "Mechanic writes own location" ON public.booking_locations FOR INS
   auth.uid() = mechanic_id AND EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_id AND b.mechanic_id = auth.uid())
 );
 DROP POLICY IF EXISTS "Mechanic updates own location" ON public.booking_locations;
-CREATE POLICY "Mechanic updates own location" ON public.booking_locations FOR UPDATE USING (auth.uid() = mechanic_id) WITH CHECK (auth.uid() = mechanic_id);
+CREATE POLICY "Mechanic updates own location" ON public.booking_locations FOR UPDATE USING (
+  EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_locations.booking_id AND b.mechanic_id = auth.uid())
+) WITH CHECK (
+  EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_locations.booking_id AND b.mechanic_id = auth.uid())
+);
 DROP POLICY IF EXISTS "Customer writes own location" ON public.booking_locations;
 CREATE POLICY "Customer writes own location" ON public.booking_locations FOR INSERT WITH CHECK (
   auth.uid() = customer_id AND EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_id AND b.customer_id = auth.uid())
 );
 DROP POLICY IF EXISTS "Customer updates own location" ON public.booking_locations;
-CREATE POLICY "Customer updates own location" ON public.booking_locations FOR UPDATE USING (auth.uid() = customer_id) WITH CHECK (auth.uid() = customer_id);
+CREATE POLICY "Customer updates own location" ON public.booking_locations FOR UPDATE USING (
+  EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_locations.booking_id AND b.customer_id = auth.uid())
+) WITH CHECK (
+  EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_locations.booking_id AND b.customer_id = auth.uid())
+);
 DROP POLICY IF EXISTS "Mechanic deletes own location" ON public.booking_locations;
-CREATE POLICY "Mechanic deletes own location" ON public.booking_locations FOR DELETE USING (auth.uid() = mechanic_id);
+CREATE POLICY "Mechanic deletes own location" ON public.booking_locations FOR DELETE USING (
+  EXISTS (SELECT 1 FROM public.bookings b WHERE b.id = booking_locations.booking_id AND b.mechanic_id = auth.uid())
+);
 
 -- Add the table to Supabase Realtime if it is not already published.
 DO $$
